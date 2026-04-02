@@ -2888,6 +2888,10 @@ msgstr "Aktiviere „Jellyfin/Plex-Benutzer importieren”"
 msgid "The full URL to your external service instance"
 msgstr "Die komplette URL zu deiner externen Serviceinstanz"
 
+#: app/templates/settings/connections/form.html:176
+msgid "API key from your external service settings"
+msgstr "API-Schlüssel aus deinem externen Dienst"
+
 msgid "Enable User Lifecycle Emails"
 msgstr "Benutzer-E-Mails für Kontolebenszyklus aktivieren"
 
@@ -3028,10 +3032,6 @@ msgstr "Wähle Englisch oder Deutsch für ausgehende E-Mails. Das Layout orienti
 
 msgid "User Info"
 msgstr "Benutzerinfo"
-
-#: app/templates/settings/connections/form.html:176
-msgid "API key from your external service settings"
-msgstr "API-Schlüssel aus deinem externen Dienst"
 
 #: app/templates/settings/wizard/_sub_nav.html:14
 msgid "Default Steps"
