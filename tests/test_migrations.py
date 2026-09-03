@@ -5,6 +5,7 @@ import pytest
 import requests
 from flask_migrate import downgrade, upgrade
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
 
 from app import create_app
 from app.config import BaseConfig
@@ -20,14 +21,19 @@ class MigrationTestConfig(BaseConfig):
 @pytest.fixture
 def temp_db():
     """Create a temporary database file for migration testing."""
+    import contextlib
+
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
 
     try:
         yield f"sqlite:///{db_path}"
     finally:
-        if os.path.exists(db_path):
-            os.unlink(db_path)
+        for ext in ["", "-wal", "-shm"]:
+            f_path = db_path + ext
+            if os.path.exists(f_path):
+                with contextlib.suppress(Exception):
+                    os.unlink(f_path)
 
 
 @pytest.fixture
@@ -38,6 +44,11 @@ def migration_app(temp_db):
 
     app = create_app(config)  # type: ignore
     yield app
+    from app.extensions import db
+
+    with app.app_context():
+        db.session.remove()
+        db.engine.dispose()
 
 
 def test_full_migration_upgrade(migration_app, temp_db):
@@ -87,6 +98,67 @@ def test_full_migration_upgrade(migration_app, temp_db):
             assert has_unique_constraint, (
                 "wizard_bundle_step missing unique constraint (no sqlite_autoindex found)"
             )
+
+
+def test_expired_user_event_migration_repairs_existing_data(migration_app, temp_db):
+    """Test duplicate removal, disabled-state repair, and the unique index."""
+    with migration_app.app_context():
+        upgrade(revision="20260401_repair")
+
+        engine = create_engine(temp_db)
+        with engine.connect() as connection:
+            expiry_time = "2026-08-01 00:00:00.000000"
+            connection.execute(
+                text("""
+                    INSERT INTO "user"
+                        (id, token, username, email, code, expires, is_disabled,
+                         is_ldap_user)
+                    VALUES
+                        (42, 'token', 'expired-user', 'expired@example.com',
+                         'EXPIRED', :expiry_time, 0, 0)
+                """),
+                {"expiry_time": expiry_time},
+            )
+            connection.execute(
+                text("""
+                    INSERT INTO expired_user
+                        (original_user_id, username, expired_at, deleted_at)
+                    VALUES
+                        (42, 'expired-user', :expiry_time, :expiry_time),
+                        (42, 'expired-user', :expiry_time, :expiry_time)
+                """),
+                {"expiry_time": expiry_time},
+            )
+            connection.commit()
+
+        upgrade(revision="20260901_expired_unique")
+
+        with engine.connect() as connection:
+            event_count = connection.execute(
+                text("SELECT COUNT(*) FROM expired_user")
+            ).scalar_one()
+            disabled = connection.execute(
+                text('SELECT is_disabled FROM "user" WHERE id = 42')
+            ).scalar_one()
+            indexes = {
+                row[1]
+                for row in connection.execute(text("PRAGMA index_list(expired_user)"))
+            }
+
+            assert event_count == 1
+            assert disabled == 1
+            assert "uq_expired_user_event" in indexes
+
+            with pytest.raises(IntegrityError):
+                connection.execute(
+                    text("""
+                        INSERT INTO expired_user
+                            (original_user_id, username, expired_at, deleted_at)
+                        VALUES
+                            (42, 'expired-user', :expiry_time, :expiry_time)
+                    """),
+                    {"expiry_time": expiry_time},
+                )
 
 
 def test_problematic_migration_specifically(migration_app, temp_db):
